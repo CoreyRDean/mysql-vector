@@ -121,7 +121,10 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      */
     public function cosim(array $v1, array $v2): float
     {
-        $statement = $this->mysqli->prepare("SELECT COSIM(?, ?)");
+        $v1 = json_encode($v1);
+        $v2 = json_encode($v2);
+
+        $statement = $this->mysqli->prepare("SELECT COSIM('$v1', '$v2')");
 
         if(!$statement) {
             $e = new \Exception($this->mysqli->error);
@@ -129,10 +132,6 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
             throw $e;
         }
 
-        $v1 = json_encode($v1);
-        $v2 = json_encode($v2);
-
-        $statement->bind_param('ss', $v1, $v2);
         $statement->execute();
         $statement->bind_result($similarity);
         $statement->fetch();
@@ -364,8 +363,11 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
         // Rerank candidates using cosine similarity
         $placeholders = implode(',', array_fill(0, count($candidates), '?'));
+
+        $normalizedVector = json_encode($normalizedVector);
+
         $sql = "
-        SELECT id, vector, normalized_vector, magnitude, COSIM(normalized_vector, ?) AS similarity
+        SELECT id, vector, normalized_vector, magnitude, COSIM(normalized_vector, '$normalizedVector') AS similarity
         FROM %s
         WHERE id IN ($placeholders)
         ORDER BY similarity DESC
@@ -380,10 +382,10 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
             throw $e;
         }
 
-        $normalizedVector = json_encode($normalizedVector);
+
 
         $types = str_repeat('i', count($candidates));
-        $statement->bind_param('s' . $types, $normalizedVector, ...$candidates);
+        $statement->bind_param($types, ...$candidates);
 
         $statement->execute();
 
