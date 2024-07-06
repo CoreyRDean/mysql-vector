@@ -2,7 +2,17 @@
 
 namespace MHz\MysqlVector\Nlp;
 
-require_once __DIR__ . '/../../vendor/autoload.php';
+// Dynamic approach to locate and require the vendor/autoload.php
+$dir = __DIR__;
+while (!file_exists($dir . '/vendor/autoload.php')) {
+    $dir = dirname($dir);
+    if ($dir === '/' || $dir === '.') {
+        // autoload.php not found, handle the error or throw an exception
+        throw new \Exception('Unable to locate autoload.php. Please run composer install.');
+    }
+}
+
+require_once $dir . '/vendor/autoload.php';
 
 use OnnxRuntime\Model;
 use OnnxRuntime\Vendor;
