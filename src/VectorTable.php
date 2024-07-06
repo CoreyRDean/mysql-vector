@@ -62,21 +62,19 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      */
     private function vectorToHex(array $vector): string {
         $binary = '';
-        foreach($vector as $value) {
+        foreach ($vector as $value) {
             $binary .= $value > 0 ? '1' : '0';
         }
 
-        $padded = str_pad($binary, ceil(strlen($binary) / 8) * 8, '0', STR_PAD_LEFT);
-
-        return $this->binaryToHexadecimal($padded);
-    }
-
-    private function binaryToHexadecimal(string $binaryString): string {
-        $hex = '';
-        foreach(str_split($binaryString, 8) as $char) {
-            $hex .= strtoupper(dechex(bindec(strrev($char))));
+        // Convert binary string to actual binary data
+        $binaryData = '';
+        foreach (str_split($binary, 8) as $byte) {
+            $binaryData .= chr(bindec($byte));
         }
-        $hex = str_pad($hex, ceil(strlen($hex) / 4) * 4, '0', STR_PAD_LEFT);
+
+        // Convert the binary data to hexadecimal
+        $hex = bin2hex($binaryData);
+
         return $hex;
     }
 
