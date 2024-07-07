@@ -1,5 +1,5 @@
 {
-  "name": "allanpichardo/mysql-vector",
+  "name": "coreyrdean/mysql-vector",
   "description": "Perform vector operations natively on MySQL",
   "type": "library",
   "license": "MIT",
