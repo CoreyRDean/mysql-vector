@@ -3,6 +3,7 @@
 namespace MHz\MysqlVector;
 
 use KMeans\Space;
+use MHz\MysqlVector\Nlp\DatabaseAdapterInterface;
 
 class VectorTable
 {
@@ -10,7 +11,7 @@ class VectorTable
     private int $dimension;
     private string $engine;
     private array $centroidCache;
-    private \mysqli $mysqli;
+    private DatabaseAdapterInterface $mysqli;
 
     const SQL_COSIM_FUNCTION = "
 CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLARE sim FLOAT DEFAULT 0; DECLARE i INT DEFAULT 0; DECLARE len INT DEFAULT JSON_LENGTH(v1); IF JSON_LENGTH(v1) != JSON_LENGTH(v2) THEN RETURN NULL; END IF; WHILE i < len DO SET sim = sim + (JSON_EXTRACT(v1, CONCAT('$[', i, ']')) * JSON_EXTRACT(v2, CONCAT('$[', i, ']'))); SET i = i + 1; END WHILE; RETURN sim; END";
@@ -18,13 +19,12 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
     /**
      * Instantiate a new VectorTable object.
-     * @param \mysqli $mysqli The mysqli connection
+     * @param DatabaseAdapterInterface $mysqli The mysqli connection
      * @param string $name Name of the table.
      * @param int $dimension Dimension of the vectors.
-     * @param int $quantizationSampleSize Number of vectors to use for quantization.
      * @param string $engine The storage engine to use for the tables
      */
-    public function __construct(\mysqli $mysqli, string $name, int $dimension = 384, string $engine = 'InnoDB')
+    public function __construct(DatabaseAdapterInterface $mysqli, string $name, int $dimension = 384, string $engine = 'InnoDB')
     {
         $this->mysqli = $mysqli;
         $this->name = $name;
@@ -89,8 +89,8 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $this->mysqli->begin_transaction();
         foreach ($this->getCreateStatements($ifNotExists) as $statement) {
             $success = $this->mysqli->query($statement);
-            if (!$success) {
-                $e = new \Exception($this->mysqli->error);
+            if ($error = $success->lastError()) {
+                $e = new \Exception($error);
                 $this->mysqli->rollback();
                 throw $e;
             }
@@ -100,14 +100,15 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $this->mysqli->query("DROP FUNCTION IF EXISTS COSIM");
         $res = $this->mysqli->query(self::SQL_COSIM_FUNCTION);
 
-        if(!$res) {
-            $e = new \Exception($this->mysqli->error);
+        if($error = $res->lastError()) {
+            $e = new \Exception($error);
             $this->mysqli->rollback();
             throw $e;
         }
 
         $binaryCodeLengthInBytes = ceil($this->dimension / 8);
         $this->mysqli->query("CREATE INDEX idx_binary_code ON " . $this->getVectorTableName() . " (binary_code($binaryCodeLengthInBytes))");
+        $this->mysqli->lastError();
 
         $this->mysqli->commit();
     }
@@ -126,18 +127,17 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
         $statement = $this->mysqli->prepare("SELECT COSIM('$v1', '$v2')");
 
-        if(!$statement) {
-            $e = new \Exception($this->mysqli->error);
+        if($error = $statement->lastError()) {
+            $e = new \Exception($error);
             $this->mysqli->rollback();
             throw $e;
         }
 
         $statement->execute();
-        $statement->bind_result($similarity);
-        $statement->fetch();
+        $result = $statement->fetch();
         $statement->close();
 
-        return $similarity;
+        return reset($result);
     }
 
     /**
@@ -159,8 +159,8 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
             "UPDATE $tableName SET vector = ?, normalized_vector = ?, magnitude = ?, binary_code = UNHEX(?) WHERE id = $id";
 
         $statement = $this->mysqli->prepare($insertQuery);
-        if(!$statement) {
-            $e = new \Exception($this->mysqli->error);
+        if($error = $statement->lastError()) {
+            $e = new \Exception($error);
             $this->mysqli->rollback();
             throw $e;
         }
@@ -168,14 +168,12 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $vector = json_encode($vector);
         $normalizedVector = json_encode($normalizedVector);
 
-        $statement->bind_param('ssds', $vector, $normalizedVector, $magnitude, $binaryCode);
-
-        $success = $statement->execute();
-        if(!$success) {
-            throw new \Exception($statement->error);
+        $success = $statement->execute('ssds', $vector, $normalizedVector, $magnitude, $binaryCode);
+        if($error = $statement->lastError()) {
+            throw new \Exception($error);
         }
 
-        $id = $statement->insert_id;
+        $id = $statement->lastInsertId();
         $statement->close();
 
         return $id;
@@ -191,8 +189,8 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $tableName = $this->getVectorTableName();
 
         $statement = $this->getConnection()->prepare("INSERT INTO $tableName (vector, normalized_vector, magnitude, binary_code) VALUES (?, ?, ?, UNHEX(?))");
-        if(!$statement) {
-            throw new \Exception("Prepare failed: " . $this->getConnection()->error);
+        if($error = $this->getConnection()->lastError()) {
+            throw new \Exception("Prepare failed: " . $error);
         }
 
         $ids = [];
@@ -205,13 +203,11 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
                 $vectorJson = json_encode($vector);
                 $normalizedVectorJson = json_encode($normalizedVector);
 
-                $statement->bind_param('ssds', $vectorJson, $normalizedVectorJson, $magnitude, $binaryCode);
-
-                if (!$statement->execute()) {
-                    throw new \Exception("Execute failed: " . $statement->error);
+                if ($error = $statement->execute('ssds', $vectorJson, $normalizedVectorJson, $magnitude, $binaryCode)->lastError()) {
+                    throw new \Exception("Execute failed: " . $error);
                 }
 
-                $ids[] = $statement->insert_id;
+                $ids[] = $statement->lastInsertId();
             }
 
             $this->getConnection()->commit();
@@ -227,7 +223,6 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
     /**
      * Select one or more vectors by id
-     * @param \mysqli $mysqli The mysqli connection
      * @param array $ids The ids of the vectors to select
      * @return array Array of vectors
      */
@@ -243,18 +238,16 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
             $refs[$key] = &$ids[$key];
         }
 
-        call_user_func_array([$statement, 'bind_param'], array_merge([$types], $refs));
-        $statement->execute();
-        $statement->bind_result($vectorId, $vector, $normalizedVector, $magnitude, $binaryCode);
+        $statement->execute(...array_merge([$types], $refs));
 
         $result = [];
-        while ($statement->fetch()) {
+        while ($row = $statement->fetch()) {
             $result[] = [
-                'id' => $vectorId,
-                'vector' => json_decode($vector, true),
-                'normalized_vector' => json_decode($normalizedVector, true),
-                'magnitude' => $magnitude,
-                'binary_code' => $binaryCode
+                'id' => $row['id'],
+                'vector' => json_decode($row['vector'], true),
+                'normalized_vector' => json_decode($row['normalized_vector'], true),
+                'magnitude' => $row['magnitude'],
+                'binary_code' => $row['binary_code']
             ];
         }
 
@@ -268,23 +261,22 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
         $statement = $this->mysqli->prepare("SELECT id, vector, normalized_vector, magnitude, binary_code FROM $tableName");
 
-        if (!$statement) {
-            $e = new \Exception($this->mysqli->error);
+        if ($error = $statement->lastError()) {
+            $e = new \Exception($error);
             $this->mysqli->rollback();
             throw $e;
         }
 
         $statement->execute();
-        $statement->bind_result($vectorId, $vector, $normalizedVector, $magnitude, $binaryCode);
 
         $result = [];
-        while ($statement->fetch()) {
+        while ($row = $statement->fetch()) {
             $result[] = [
-                'id' => $vectorId,
-                'vector' => json_decode($vector, true),
-                'normalized_vector' => json_decode($normalizedVector, true),
-                'magnitude' => $magnitude,
-                'binary_code' => $binaryCode
+                'id' => $row['id'],
+                'vector' => json_decode($row['vector'], true),
+                'normalized_vector' => json_decode($row['normalized_vector'], true),
+                'magnitude' => $row['magnitude'],
+                'binary_code' => $row['binary_code']
             ];
         }
 
@@ -314,10 +306,9 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $tableName = $this->getVectorTableName();
         $statement = $this->mysqli->prepare("SELECT COUNT(id) FROM $tableName");
         $statement->execute();
-        $statement->bind_result($count);
-        $statement->fetch();
+        $result = $statement->fetch();
         $statement->close();
-        return $count;
+        return reset($result);
     }
 
     private function getMagnitude(array $vector): float
@@ -344,20 +335,18 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
         // Initial search using binary codes
         $statement = $this->mysqli->prepare("SELECT id, BIT_COUNT(binary_code ^ UNHEX(?)) AS hamming_distance FROM $tableName ORDER BY hamming_distance LIMIT $n");
-        $statement->bind_param('s', $binaryCode);
 
-        if(!$statement) {
-            $e = new \Exception($this->mysqli->error);
+        if($error = $statement->lastError()) {
+            $e = new \Exception($error);
             $this->mysqli->rollback();
             throw $e;
         }
 
-        $statement->execute();
-        $statement->bind_result($vectorId, $hd);
+        $statement->execute('s', $binaryCode);
 
         $candidates = [];
-        while ($statement->fetch()) {
-            $candidates[] = $vectorId;
+        while ($row = $statement->fetch()) {
+            $candidates[] = $row['id'];
         }
         $statement->close();
 
@@ -380,8 +369,8 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
         $statement = $this->mysqli->prepare($sql);
 
-        if(!$statement) {
-            $e = new \Exception($this->mysqli->error);
+        if($error = $statement->lastError()) {
+            $e = new \Exception($error);
             $this->mysqli->rollback();
             throw $e;
         }
@@ -389,20 +378,17 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
 
         $types = str_repeat('i', count($candidates));
-        $statement->bind_param($types, ...$candidates);
 
-        $statement->execute();
-
-        $statement->bind_result($id, $v, $nv, $mag, $sim);
+        $statement->execute($types, ...$candidates);
 
         $results = [];
-        while ($statement->fetch()) {
+        while ($row = $statement->fetch()) {
             $results[] = [
-                'id' => $id,
-                'vector' => json_decode($v, true),
-                'normalized_vector' => json_decode($nv, true),
-                'magnitude' => $mag,
-                'similarity' => $sim
+                'id' => $row['id'],
+                'vector' => json_decode($row['vector'], true),
+                'normalized_vector' => json_decode($row['normalized_vector'], true),
+                'magnitude' => $row['magnitude'],
+                'similarity' => $row['similarity']
             ];
         }
 
@@ -438,15 +424,14 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
     public function delete(int $id): void {
         $tableName = $this->getVectorTableName();
         $statement = $this->mysqli->prepare("DELETE FROM $tableName WHERE id = ?");
-        $statement->bind_param('i', $id);
-        $success = $statement->execute();
-        if(!$success) {
-            throw new \Exception($statement->error);
+        $success = $statement->execute('i', $id);
+        if($error = $success->lastError()) {
+            throw new \Exception($error);
         }
         $statement->close();
     }
 
-    public function getConnection(): \mysqli {
+    public function getConnection(): DatabaseAdapterInterface {
         return $this->mysqli;
     }
 }

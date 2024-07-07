@@ -9,6 +9,10 @@
       "name": "Allan Pichardo",
       "email": "allan.pichardo@gmail.com",
       "homepage": "https://allanpichardo.com"
+    },
+    {
+      "name": "Corey Dean",
+      "email": "coreyrdean@gmail.com"
     }
   ],
   "require": {
@@ -23,7 +27,8 @@
     "symfony/polyfill-ctype": "^1.28",
     "ext-iconv": "*",
     "symfony/polyfill-iconv": "^1.28",
-    "ankane/onnxruntime": "^0.1.7"
+    "ankane/onnxruntime": "^0.1.7",
+    "ext-pdo": "*"
   },
   "replace": {
     "symfony/polyfill-intl-normalizer": "^1.28",
