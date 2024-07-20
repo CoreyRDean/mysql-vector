@@ -12,6 +12,8 @@ class VectorTable
     private string $engine;
     private array $centroidCache;
     private DatabaseAdapterInterface $mysqli;
+    private string $prefix = 'vectors_';
+    private string $suffix = '';
 
     const SQL_COSIM_FUNCTION = "
 CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLARE sim FLOAT DEFAULT 0; DECLARE i INT DEFAULT 0; DECLARE len INT DEFAULT JSON_LENGTH(v1); IF JSON_LENGTH(v1) != JSON_LENGTH(v2) THEN RETURN NULL; END IF; WHILE i < len DO SET sim = sim + (JSON_EXTRACT(v1, CONCAT('$[', i, ']')) * JSON_EXTRACT(v2, CONCAT('$[', i, ']'))); SET i = i + 1; END WHILE; RETURN sim; END";
@@ -35,7 +37,21 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
 
     public function getVectorTableName(): string
     {
-        return sprintf('%s_vectors', $this->name);
+        return sprintf('%s%s%s', $this->prefix, $this->name, $this->suffix);
+    }
+
+    public function setTableFixes(string $prefix, string $suffix = ''): void {
+        $this->prefix = $prefix;
+        $this->suffix = $suffix;
+    }
+
+    public function doesTableExist(): bool {
+        $tableName = $this->getVectorTableName();
+        $statement = $this->mysqli->prepare("SHOW TABLES LIKE ?");
+        $statement->execute('s', $tableName);
+        $result = $statement->fetch();
+        $statement->close();
+        return !empty($result);
     }
 
     protected function getCreateStatements(bool $ifNotExists = true): array {
@@ -76,6 +92,13 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $hex = bin2hex($binaryData);
 
         return $hex;
+    }
+
+    /**
+     * Drops the table
+     */
+    public function drop(): void {
+        $this->mysqli->query("DROP TABLE IF EXISTS " . $this->getVectorTableName());
     }
 
     /**
@@ -243,7 +266,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $result = [];
         while ($row = $statement->fetch()) {
             $result[] = [
-                'id' => $row['id'],
+                'id' => intval($row['id']),
                 'vector' => json_decode($row['vector'], true),
                 'normalized_vector' => json_decode($row['normalized_vector'], true),
                 'magnitude' => $row['magnitude'],
@@ -272,7 +295,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $result = [];
         while ($row = $statement->fetch()) {
             $result[] = [
-                'id' => $row['id'],
+                'id' => intval($row['id']),
                 'vector' => json_decode($row['vector'], true),
                 'normalized_vector' => json_decode($row['normalized_vector'], true),
                 'magnitude' => $row['magnitude'],
@@ -311,7 +334,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         return reset($result);
     }
 
-    private function getMagnitude(array $vector): float
+    public function getMagnitude(array $vector): float
     {
         $sum = 0;
         foreach ($vector as $value) {
@@ -384,11 +407,11 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $results = [];
         while ($row = $statement->fetch()) {
             $results[] = [
-                'id' => $row['id'],
+                'id' => intval($row['id']),
                 'vector' => json_decode($row['vector'], true),
                 'normalized_vector' => json_decode($row['normalized_vector'], true),
                 'magnitude' => $row['magnitude'],
-                'similarity' => $row['similarity']
+                'similarity' => floatval($row['similarity'])
             ];
         }
 
@@ -404,7 +427,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      * @param float $epsilon The epsilon value to use for normalization
      * @return array The normalized vector
      */
-    private function normalize(array $vector, float $magnitude = null, float $epsilon = 1e-10): array {
+    public function normalize(array $vector, float $magnitude = null, float $epsilon = 1e-10): array {
         $magnitude = !empty($magnitude) ? $magnitude : $this->getMagnitude($vector);
         if ($magnitude == 0) {
             $magnitude = $epsilon;

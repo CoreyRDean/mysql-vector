@@ -14,6 +14,7 @@ while (!file_exists($dir . '/vendor/autoload.php')) {
 
 require_once $dir . '/vendor/autoload.php';
 
+use OnnxRuntime\Exception;
 use OnnxRuntime\Model;
 use OnnxRuntime\Vendor;
 
@@ -26,7 +27,14 @@ class Embedder
     const EMBEDDING_DIMENSIONS = 384;
     const MAX_LENGTH = 512;
 
+    /**
+     * @throws \Exception
+     */
     public function __construct() {
+        if (!extension_loaded('ffi')) {
+            throw new \Exception('The FFI extension for PHP is required to perform embeddings.');
+        }
+
         // check if onnxruntime is installed
         ob_start();
         Vendor::check();
