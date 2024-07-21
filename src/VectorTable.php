@@ -364,6 +364,10 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         // Rerank candidates using cosine similarity
         $placeholders = implode(',', array_fill(0, count($candidates), '?'));
 
+        if (empty($placeholders)) {
+            return [];
+        }
+
         $normalizedVector = json_encode($normalizedVector);
 
         $sql = "
