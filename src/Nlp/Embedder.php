@@ -21,6 +21,7 @@ use OnnxRuntime\Vendor;
 class Embedder
 {
     private Model $model;
+    private string $modelHash;
     private BertTokenizer $tokenizer;
 
     const QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages:";
@@ -42,6 +43,8 @@ class Embedder
 
         // load model
         $this->model = new Model(__DIR__ . '/model_quantized.onnx');
+
+        $this->modelHash = md5_file(__DIR__ . '/model_quantized.onnx');
 
         // load tokenizer configuration
         $tokenizerConfig = json_decode(file_get_contents(__DIR__ . '/tokenizer_config.json'), true);
@@ -128,5 +131,9 @@ class Embedder
 
     public function getMaxLength(): int {
         return $this->tokenizer->modelMaxLength;
+    }
+
+    public function getModelHash(): string {
+        return $this->modelHash;
     }
 }

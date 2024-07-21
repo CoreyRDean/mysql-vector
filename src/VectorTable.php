@@ -14,6 +14,7 @@ class VectorTable
     private DatabaseAdapterInterface $mysqli;
     private string $prefix = 'vectors_';
     private string $suffix = '';
+    private ?string $currentModelHash = null;
 
     const SQL_COSIM_FUNCTION = "
 CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLARE sim FLOAT DEFAULT 0; DECLARE i INT DEFAULT 0; DECLARE len INT DEFAULT JSON_LENGTH(v1); IF JSON_LENGTH(v1) != JSON_LENGTH(v2) THEN RETURN NULL; END IF; WHILE i < len DO SET sim = sim + (JSON_EXTRACT(v1, CONCAT('$[', i, ']')) * JSON_EXTRACT(v2, CONCAT('$[', i, ']'))); SET i = i + 1; END WHILE; RETURN sim; END";
@@ -45,6 +46,10 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $this->suffix = $suffix;
     }
 
+    public function setCurrentModelHash(string $hash) {
+        $this->currentModelHash = $hash;
+    }
+
     public function doesTableExist(): bool {
         $tableName = $this->getVectorTableName();
         $statement = $this->mysqli->prepare("SHOW TABLES LIKE ?");
@@ -64,6 +69,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
                 normalized_vector JSON,
                 magnitude DOUBLE,
                 binary_code BINARY(%d),
+                model_hash_md5 CHAR(32) DEFAULT NULL,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=%s;";
         $vectorsQuery = sprintf($vectorsQuery, $ifNotExists ? 'IF NOT EXISTS' : '', $this->getVectorTableName(), $binaryCodeLengthInBytes, $this->engine);
@@ -177,9 +183,11 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $binaryCode = $this->vectorToHex($normalizedVector);
         $tableName = $this->getVectorTableName();
 
+        $modelHash = $this->currentModelHash;
+
         $insertQuery = empty($id) ?
-            "INSERT INTO $tableName (vector, normalized_vector, magnitude, binary_code) VALUES (?, ?, ?, UNHEX(?))" :
-            "UPDATE $tableName SET vector = ?, normalized_vector = ?, magnitude = ?, binary_code = UNHEX(?) WHERE id = $id";
+            "INSERT INTO $tableName (vector, normalized_vector, magnitude, binary_code, model_hash_md5) VALUES (?, ?, ?, UNHEX(?), ?)" :
+            "UPDATE $tableName SET vector = ?, normalized_vector = ?, magnitude = ?, binary_code = UNHEX(?), model_hash_md5 = ? WHERE id = $id";
 
         $statement = $this->mysqli->prepare($insertQuery);
         if($error = $statement->lastError()) {
@@ -191,7 +199,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $vector = json_encode($vector);
         $normalizedVector = json_encode($normalizedVector);
 
-        $success = $statement->execute('ssds', $vector, $normalizedVector, $magnitude, $binaryCode);
+        $success = $statement->execute('ssdss', $vector, $normalizedVector, $magnitude, $binaryCode, $modelHash);
         if($error = $statement->lastError()) {
             throw new \Exception($error);
         }
@@ -210,8 +218,9 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      */
     public function batchInsert(array $vectorArray): array {
         $tableName = $this->getVectorTableName();
+        $modelHash = $this->currentModelHash;
 
-        $statement = $this->getConnection()->prepare("INSERT INTO $tableName (vector, normalized_vector, magnitude, binary_code) VALUES (?, ?, ?, UNHEX(?))");
+        $statement = $this->getConnection()->prepare("INSERT INTO $tableName (vector, normalized_vector, magnitude, binary_code, model_hash_md5) VALUES (?, ?, ?, UNHEX(?), ?)");
         if($error = $this->getConnection()->lastError()) {
             throw new \Exception("Prepare failed: " . $error);
         }
@@ -226,7 +235,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
                 $vectorJson = json_encode($vector);
                 $normalizedVectorJson = json_encode($normalizedVector);
 
-                if ($error = $statement->execute('ssds', $vectorJson, $normalizedVectorJson, $magnitude, $binaryCode)->lastError()) {
+                if ($error = $statement->execute('ssdss', $vectorJson, $normalizedVectorJson, $magnitude, $binaryCode, $modelHash)->lastError()) {
                     throw new \Exception("Execute failed: " . $error);
                 }
 
@@ -249,11 +258,18 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      * @param array $ids The ids of the vectors to select
      * @return array Array of vectors
      */
-    public function select(array $ids): array {
+    public function select(array $ids, bool $includeOutdated = false): array {
         $tableName = $this->getVectorTableName();
+        $modelHash = $this->currentModelHash;
 
         $placeholders = implode(', ', array_fill(0, count($ids), '?'));
-        $statement = $this->mysqli->prepare("SELECT id, vector, normalized_vector, magnitude, binary_code FROM $tableName WHERE id IN ($placeholders)");
+        $sql = "SELECT id, vector, normalized_vector, magnitude, binary_code FROM $tableName WHERE id IN ($placeholders)";
+
+        if ($modelHash && !$includeOutdated) {
+            $sql .= " AND model_hash_md5 = '$modelHash'";
+        }
+
+        $statement = $this->mysqli->prepare($sql);
         $types = str_repeat('i', count($ids));
 
         $refs = [];
@@ -279,10 +295,17 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         return $result;
     }
 
-    public function selectAll(): array {
+    public function selectAll(bool $includeOutdated = false): array {
         $tableName = $this->getVectorTableName();
+        $modelHash = $this->currentModelHash;
 
-        $statement = $this->mysqli->prepare("SELECT id, vector, normalized_vector, magnitude, binary_code FROM $tableName");
+        $sql = "SELECT id, vector, normalized_vector, magnitude, binary_code FROM $tableName";
+
+        if ($modelHash && !$includeOutdated) {
+            $sql .= " WHERE model_hash_md5 = '$modelHash'";
+        }
+
+        $statement = $this->mysqli->prepare($sql);
 
         if ($error = $statement->lastError()) {
             $e = new \Exception($error);
@@ -351,13 +374,22 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      * @return array Array of results containing the id, similarity, and vector
      * @throws \Exception
      */
-    public function search(array $vector, int $n = 10): array {
+    public function search(array $vector, int $n = 10, bool $includeOutdated = false): array {
         $tableName = $this->getVectorTableName();
         $normalizedVector = $this->normalize($vector);
         $binaryCode = $this->vectorToHex($normalizedVector);
+        $modelHash = $this->currentModelHash;
 
         // Initial search using binary codes
-        $statement = $this->mysqli->prepare("SELECT id, BIT_COUNT(binary_code ^ UNHEX(?)) AS hamming_distance FROM $tableName ORDER BY hamming_distance LIMIT $n");
+        $sql = "SELECT id, BIT_COUNT(binary_code ^ UNHEX(?)) AS hamming_distance FROM $tableName";
+
+        if ($modelHash && !$includeOutdated) {
+            $sql .= " WHERE model_hash_md5 = '$modelHash'";
+        }
+
+        $sql .= " ORDER BY hamming_distance LIMIT $n";
+
+        $statement = $this->mysqli->prepare($sql);
 
         if($error = $statement->lastError()) {
             $e = new \Exception($error);

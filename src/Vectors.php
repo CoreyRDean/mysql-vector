@@ -18,6 +18,7 @@ class Vectors
     private string $currentEngine = 'InnoDB';
     private ?string $currentTablePrefix = null;
     private ?string $currentTableSuffix = null;
+    private bool $ignoreModelVersion = false;
     public static function isAvailable(): bool
     {
         return extension_loaded('ffi') && in_array(ini_get('ffi.enable'), ['true', '1'], true);
@@ -79,6 +80,14 @@ class Vectors
         return $this;
     }
 
+    public function overrideIgnoreModelVersion(bool $ignoreModelVersion): Vectors
+    {
+        $this->ignoreModelVersion = $ignoreModelVersion;
+        $this->currentTable = null;
+
+        return $this;
+    }
+
     public function forceRecreateTable(): Vectors
     {
         $this->getTable()->drop();
@@ -118,10 +127,11 @@ class Vectors
         $this->getTable()->delete($id);
     }
 
-    public function updateById(int $id, string $text): void
+    public function updateById(int $id, string $text): int
     {
         $vector = $this->embed($text);
         $this->getTable()->upsert($vector, $id);
+        return $id;
     }
 
     public function search(string $text, int $limit = 10): array
@@ -199,6 +209,10 @@ class Vectors
 
         if ($this->currentTablePrefix || $this->currentTableSuffix) {
             $table->setTableFixes($this->currentTablePrefix, $this->currentTableSuffix ?? '');
+        }
+
+        if (!$this->ignoreModelVersion) {
+            $table->setCurrentModelHash($this->embedder->getModelHash());
         }
 
         if ($initialize && !$this->currentTable) {
