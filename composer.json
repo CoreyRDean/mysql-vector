@@ -28,7 +28,8 @@
     "ext-iconv": "*",
     "symfony/polyfill-iconv": "^1.28",
     "ankane/onnxruntime": "^0.1.7",
-    "ext-pdo": "*"
+    "ext-pdo": "*",
+    "ext-curl": "*"
   },
   "replace": {
     "symfony/polyfill-intl-normalizer": "^1.28",

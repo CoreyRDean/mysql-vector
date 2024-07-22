@@ -41,14 +41,30 @@ class Embedder
         Vendor::check();
         ob_end_clean();
 
-        // load model
-        $this->model = new Model(__DIR__ . '/model_quantized.onnx');
+        // download model if not exists
+        $this->downloadFile(
+            'https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1/resolve/main/onnx/model_quantized.onnx',
+            __DIR__ . '/../model/model_quantized.onnx'
+        );
 
-        $this->modelHash = md5_file(__DIR__ . '/model_quantized.onnx');
+        $this->downloadFile(
+            'https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1/resolve/main/tokenizer_config.json',
+            __DIR__ . '/../model/tokenizer_config.json'
+        );
+
+        $this->downloadFile(
+            'https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1/resolve/main/tokenizer.json',
+            __DIR__ . '/../model/tokenizer.json'
+        );
+
+        // load model
+        $this->model = new Model(__DIR__ . '/../model/model_quantized.onnx');
+
+        $this->modelHash = md5_file(__DIR__ . '/../model/model_quantized.onnx');
 
         // load tokenizer configuration
-        $tokenizerConfig = json_decode(file_get_contents(__DIR__ . '/tokenizer_config.json'), true);
-        $tokenizerJSON = json_decode(file_get_contents(__DIR__ . '/tokenizer.json'), true);
+        $tokenizerConfig = json_decode(file_get_contents(__DIR__ . '/../model/tokenizer_config.json'), true);
+        $tokenizerJSON = json_decode(file_get_contents(__DIR__ . '/../model/tokenizer.json'), true);
 
         // load BertTokenizer
         $this->tokenizer = new BertTokenizer($tokenizerJSON, $tokenizerConfig);
@@ -135,5 +151,78 @@ class Embedder
 
     public function getModelHash(): string {
         return $this->modelHash;
+    }
+
+    private function downloadFile(string $remote, string $local) {
+        $url = $remote;
+        $localFilePath = $local;
+        $lockFilePath = $localFilePath . '.lock';
+
+        // Step 1: Check if the file already exists
+        if (!file_exists($localFilePath)) {
+            // Step 2: Check for a lock file indicating another process is downloading the file
+            while (file_exists($lockFilePath)) {
+                // Check the age of the lock file to avoid waiting indefinitely
+                if (time() - filemtime($lockFilePath) > 300) { // 300 seconds = 5 minutes
+                    // Lock file is older than 5 minutes, assume the other process failed and remove the lock file
+                    unlink($lockFilePath);
+                    break;
+                }
+                // Wait for a bit before checking again
+                sleep(5);
+            }
+
+            // If the file was downloaded while waiting, return
+            if (file_exists($localFilePath)) {
+                return;
+            }
+
+            // Step 1: Get the directory path from the full file path
+            $directoryPath = dirname($localFilePath);
+
+            // Step 2 & 3: Check if the directory exists, if not, create it
+            if (!file_exists($directoryPath)) {
+                mkdir($directoryPath, 0755, true); // Recursive creation
+            }
+
+            // Create a lock file to indicate that download is in progress
+            file_put_contents($lockFilePath, "lock");
+
+            $fp = fopen($localFilePath, 'w+');
+            if ($fp === false) {
+                unlink($lockFilePath);
+                throw new Exception("Cannot open file ($localFilePath) for writing.");
+            }
+
+            $ch = curl_init($url);
+            curl_setopt($ch, CURLOPT_FILE, $fp);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true); // Follow redirects
+            curl_setopt($ch, CURLOPT_TIMEOUT, 50);
+
+            // For HTTPS URLs, you might need to disable SSL verification in a non-production environment
+            // curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+
+            curl_exec($ch);
+
+            if (curl_errno($ch)) {
+                fclose($fp);
+                unlink($localFilePath); // Remove partially downloaded file
+                unlink($lockFilePath);
+                throw new Exception(curl_error($ch));
+            }
+
+            $statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            fclose($fp);
+
+            if ($statusCode !== 200) {
+                unlink($localFilePath); // Remove partially downloaded file if HTTP status code is not 200
+                unlink($lockFilePath);
+                throw new Exception("File download failed with HTTP status code: $statusCode");
+            }
+
+            // Remove the lock file
+            unlink($lockFilePath);
+        }
     }
 }
