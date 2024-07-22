@@ -65,6 +65,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $vectorsQuery =
             "CREATE TABLE %s %s (
                 id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                meta JSON DEFAULT NULL,
                 vector JSON,
                 normalized_vector JSON,
                 magnitude DOUBLE,
@@ -176,7 +177,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
      * @return int The ID of the inserted or updated vector
      * @throws \Exception If the vector could not be inserted or updated
      */
-    public function upsert(array $vector, int $id = null): int
+    public function upsert(array $vector, int $id = null, array $meta = null): int
     {
         $magnitude = $this->getMagnitude($vector);
         $normalizedVector = $this->normalize($vector, $magnitude);
@@ -186,8 +187,8 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $modelHash = $this->currentModelHash;
 
         $insertQuery = empty($id) ?
-            "INSERT INTO $tableName (vector, normalized_vector, magnitude, binary_code, model_hash_md5) VALUES (?, ?, ?, UNHEX(?), ?)" :
-            "UPDATE $tableName SET vector = ?, normalized_vector = ?, magnitude = ?, binary_code = UNHEX(?), model_hash_md5 = ? WHERE id = $id";
+            "INSERT INTO $tableName (meta, vector, normalized_vector, magnitude, binary_code, model_hash_md5) VALUES (?, ?, ?, ?, UNHEX(?), ?)" :
+            "UPDATE $tableName SET meta = ?, vector = ?, normalized_vector = ?, magnitude = ?, binary_code = UNHEX(?), model_hash_md5 = ? WHERE id = $id";
 
         $statement = $this->mysqli->prepare($insertQuery);
         if($error = $statement->lastError()) {
@@ -196,10 +197,11 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
             throw $e;
         }
 
+        $meta = json_encode($meta);
         $vector = json_encode($vector);
         $normalizedVector = json_encode($normalizedVector);
 
-        $success = $statement->execute('ssdss', $vector, $normalizedVector, $magnitude, $binaryCode, $modelHash);
+        $success = $statement->execute('sssdss', $meta, $vector, $normalizedVector, $magnitude, $binaryCode, $modelHash);
         if($error = $statement->lastError()) {
             throw new \Exception($error);
         }
@@ -263,7 +265,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $modelHash = $this->currentModelHash;
 
         $placeholders = implode(', ', array_fill(0, count($ids), '?'));
-        $sql = "SELECT id, vector, normalized_vector, magnitude, binary_code FROM $tableName WHERE id IN ($placeholders)";
+        $sql = "SELECT id, meta, vector, normalized_vector, magnitude, binary_code FROM $tableName WHERE id IN ($placeholders)";
 
         if ($modelHash && !$includeOutdated) {
             $sql .= " AND model_hash_md5 = '$modelHash'";
@@ -283,6 +285,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         while ($row = $statement->fetch()) {
             $result[] = [
                 'id' => intval($row['id']),
+                'meta' => json_decode($row['meta'], true),
                 'vector' => json_decode($row['vector'], true),
                 'normalized_vector' => json_decode($row['normalized_vector'], true),
                 'magnitude' => $row['magnitude'],
@@ -299,7 +302,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $tableName = $this->getVectorTableName();
         $modelHash = $this->currentModelHash;
 
-        $sql = "SELECT id, vector, normalized_vector, magnitude, binary_code FROM $tableName";
+        $sql = "SELECT id, meta, vector, normalized_vector, magnitude, binary_code FROM $tableName";
 
         if ($modelHash && !$includeOutdated) {
             $sql .= " WHERE model_hash_md5 = '$modelHash'";
@@ -319,6 +322,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         while ($row = $statement->fetch()) {
             $result[] = [
                 'id' => intval($row['id']),
+                'meta' => json_decode($row['meta'], true),
                 'vector' => json_decode($row['vector'], true),
                 'normalized_vector' => json_decode($row['normalized_vector'], true),
                 'magnitude' => $row['magnitude'],
@@ -415,7 +419,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         $normalizedVector = json_encode($normalizedVector);
 
         $sql = "
-        SELECT id, vector, normalized_vector, magnitude, COSIM(normalized_vector, '$normalizedVector') AS similarity
+        SELECT id, meta, vector, normalized_vector, magnitude, COSIM(normalized_vector, '$normalizedVector') AS similarity
         FROM %s
         WHERE id IN ($placeholders)
         ORDER BY similarity DESC
@@ -440,6 +444,7 @@ CREATE FUNCTION COSIM(v1 JSON, v2 JSON) RETURNS FLOAT DETERMINISTIC BEGIN DECLAR
         while ($row = $statement->fetch()) {
             $results[] = [
                 'id' => intval($row['id']),
+                'meta' => json_decode($row['meta'], true),
                 'vector' => json_decode($row['vector'], true),
                 'normalized_vector' => json_decode($row['normalized_vector'], true),
                 'magnitude' => $row['magnitude'],

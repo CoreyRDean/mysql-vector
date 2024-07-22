@@ -92,12 +92,12 @@ class Embedder
      * @return array Batch of embeddings
      * @throws \Exception
      */
-    public function embed(array $text, bool $prependQuery = false): array {
+    public function embed(array $text, bool $prependQuery = false, string $query = self::QUERY_INSTRUCTION): array {
 
         if($prependQuery) {
             // Add query instruction to text
-            $text = array_map(function($t) {
-                return self::QUERY_INSTRUCTION . ' ' . $t;
+            $text = array_map(function($t) use ($query) {
+                return $query . ' ' . $t;
             }, $text);
         }
 

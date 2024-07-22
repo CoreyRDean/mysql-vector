@@ -108,13 +108,14 @@ class Vectors
 
     public function store(string $text): int
     {
-        $vector = $this->embed($text);
+        $text = $this->sanitizeText($text);
+        $vector = $this->embed($text, false, true);
 
         if ($id = $this->idOfString($text)) {
             return $id;
         }
 
-        return $this->getTable()->upsert($vector);
+        return $this->getTable()->upsert($vector, false, [$text]);
     }
 
     public function getByIds(array $ids): array
@@ -129,8 +130,9 @@ class Vectors
 
     public function updateById(int $id, string $text): int
     {
-        $vector = $this->embed($text);
-        $this->getTable()->upsert($vector, $id);
+        $text = $this->sanitizeText($text);
+        $vector = $this->embed($text, false, true);
+        $this->getTable()->upsert($vector, $id, [$text]);
         return $id;
     }
 
@@ -140,7 +142,8 @@ class Vectors
         return array_map(function ($vector) {
             return [
                 'id' => $vector['id'],
-                'similarity' => $vector['similarity']
+                'similarity' => $vector['similarity'],
+                'meta' => $vector['meta']
             ];
         }, $this->getTable()->search($vector, $limit));
     }
@@ -165,7 +168,7 @@ class Vectors
 
     public function idOfString(string $text): ?int
     {
-        $vector = $this->embed($text);
+        $vector = $this->embed($text, false, true);
         try {
             $similar = $this->getTable()->search($vector, 1);
         } catch (\Exception $e) {
@@ -224,15 +227,23 @@ class Vectors
         return $this->currentTable;
     }
 
-    private function embed(string $text, bool $normalized = false): array {
-        $texts = explode(' ', $text);
+    private function embed(string $text, bool $normalized = false, bool $forStorage = false): array {
+        $normalizedString = $this->sanitizeText($text);
+        $texts = [$normalizedString];
+
+        $query = 'Represent this sentence for searching relevant passages:';//sprintf('Represent only the following %s information for efficient storage and retrieval', $this->currentTableName);
 
         // Split each text entry if it is longer than the maximum length and flatten the array
-        $texts = array_merge(...array_map(function($text) {
-            return str_split($text, $this->getMaxInputLength);
+        $texts = array_merge(...array_map(function($text) use ($query) {
+            return str_split($text, $this->getMaxInputLength - strlen($query));
         }, $texts));
 
-        $embeddings = $this->embedder->embed($texts);
+        $embeddings = $this->embedder->embed(
+            $texts,
+            !$forStorage,
+            $query
+        );
+
         $vectors = [];
         foreach ($embeddings as $i => $embedding) {
             $vector = $this->calculateMeanVector($embedding);
@@ -277,4 +288,7 @@ class Vectors
         return $this->getTable()->normalize($vector, $magnitude);
     }
 
+    private function sanitizeText(string $text): string {
+        return preg_replace('/\s+/', ' ', strtoupper(trim($text)));
+    }
 }
